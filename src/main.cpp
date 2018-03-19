@@ -40,7 +40,6 @@ const int8_t stateMap[] = {0x07,0x05,0x03,0x04,0x01,0x00,0x02,0x07};
 
 //Phase lead to make motor spin
 int8_t lead = 2;  //2 for forwards, -2 for backwards
-int revCount = 0; //number of revolutions
 
 
 //Status LED
@@ -110,10 +109,10 @@ char newCmd[MAX_CMD_LENGTH];
 int newCmdPos = 0;
 
 volatile uint64_t newKey;
-volatile int32_t targetVelocity = 300;
+volatile int32_t targetVelocity = 0x100;
 volatile int32_t velocity = 0;
 volatile float newRotation;
-volatile int32_t motorTorque = 30;
+volatile int32_t motorTorque = 300;
 
 Mutex newKey_mutex;
 Mutex newRotation_mutex;
@@ -160,7 +159,7 @@ void commInFn() {
                 } else {          
                     newCmd[newCmdPos] = '\0';
                     newCmdPos = 0;
-                    parseIn();
+                    //parseIn();
                 }   
             }   
         }
@@ -205,32 +204,20 @@ int8_t motorHome() {
     return readRotorState();
 }
 
-volatile int32_t motorPosition;
+int32_t motorPosition;
+
 void motorISR(){
     static int8_t oldRotorState;
     int8_t rotorState = readRotorState();
-
-    // Proportional control with k_p = 40
-    motorTorque = 40 * (targetVelocity - abs(velocity));
-
-    if (motorTorque < 0){
-	    motorTorque = -motorTorque;
-	    lead = -2;
-    } else {
-	    lead = 2;
-    }
-
-    if (motorTorque > 1000) motorTorque = 1000;
 
     motorOut((rotorState-orState+lead+6)%6, motorTorque); //+6 to make sure the remainder is positive
     if (rotorState - oldRotorState == 5) motorPosition--;
     else if (rotorState - oldRotorState == -5) motorPosition++;
     else motorPosition += (rotorState - oldRotorState);
     oldRotorState = rotorState;
-    revCount++;
 }
 
-Thread motorCtrlT (osPriorityHigh, 256);
+Thread motorCtrlT (osPriorityNormal, 512);
 
 void motorCtrlTick(){
     motorCtrlT.signal_set(0x1);    
@@ -245,7 +232,7 @@ void motorCtrlFn(){
     while(1){
         motorCtrlT.signal_wait(0x1);
         //putMessage(err, motorPosition);
-        int8_t currPosition = motorPosition;
+        int32_t currPosition = motorPosition;
         velocity = (currPosition - oldMotorPosition) * 10;
         oldMotorPosition = currPosition;
         iterations = (iterations + 1)% 10;
@@ -253,6 +240,21 @@ void motorCtrlFn(){
             //putMessage(positionReport, motorPosition);
             putMessage(velocityReport, velocity);
         }
+        // Proportional control with k_p = 10
+        //motorTorque = 20 * (targetVelocity - abs(velocity));
+    
+	/*
+        if (motorTorque < 0){
+    	    motorTorque = -motorTorque;
+    	    lead = -2;
+        } else {
+    	    lead = 2;
+        }
+        if (motorTorque > 1000) motorTorque = 1000;
+	*/
+    
+ 
+ 
     }
 }
     
@@ -327,8 +329,6 @@ int main() {
         timePassed = timer.read();
         if (timePassed > 1){
             //putMessage(hashRate, hashCount);
-            //putMessage(rotationCount, revCount/6);
-            revCount=0;
             hashCount=0;
             timer.reset();
         }
