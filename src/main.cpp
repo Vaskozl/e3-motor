@@ -134,8 +134,8 @@ char newCmd[MAX_CMD_LENGTH];
 int newCmdPos = 0;
 
 volatile uint64_t newKey;
-volatile float targetVelocity = 50.0;
-volatile float targetRotation = 2000.0;
+volatile float targetVelocity = 500.0;
+volatile float targetRotation = 600.0;
 volatile int32_t motorTorque = 300;
 
 Mutex newKey_mutex;
@@ -144,11 +144,11 @@ void parseIn(){
         switch(newCmd[0]) {
                 case 'R':
                         sscanf(newCmd, "R%f", &targetRotation);
-                        pc.printf("Changed target rotation to %f \n\r", targetRotation);
+                        pc.printf("Changed target rotation to %.1f \n\r", targetRotation);
                         break;
                 case 'V':
                         sscanf(newCmd, "V%f", &targetVelocity);
-                        pc.printf("Changed target velocity to %f \n\r", targetVelocity);
+                        pc.printf("Changed target velocity to %.1f \n\r", targetVelocity);
                         break;
                 case 'K':
                         newKey_mutex.lock();
@@ -278,7 +278,7 @@ void motorCtrlFn(){
         error_s_int += error_s;
 
         error_r = targetRotation - currPosition/6.0f;
-        int32_t y_r = (int)( 4.0f * error_r + 29.7f * (error_r - old_error_r));
+        int32_t y_r = (int)( 11.5f * error_r + 95.7f * (error_r - old_error_r));
         old_error_r = error_r;
         error_r_int += error_r;
 
