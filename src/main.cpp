@@ -87,9 +87,6 @@ DigitalOut L3H(L3Hpin);
 // Define global variables for position contol
 int8_t orState = 0; // Rotor offset at motor state 0
 
-// Distance of the motor traveled
-int32_t motorPosition;
-
 // Initialise the serial port
 RawSerial pc(SERIAL_TX, SERIAL_RX);
 
@@ -200,6 +197,10 @@ volatile float targetVelocity = INIT_SPEED;
 volatile float targetRotation = INIT_ROTATION;
 volatile int32_t motorTorque = 800;
 
+// Here in case we receive an R0 command as
+// we do not want to forget our targetRotation
+bool spinForever = 0;
+
 Mutex newKey_mutex;
 
 /* Function to parse the input over serial 
@@ -212,11 +213,12 @@ void parseIn() {
   switch (newCmd[0]) {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
-    motorPosition = 0;
-    if (tmp == 0)
-      targetRotation = FLT_MAX;
-    else
-      targetRotation = tmp;
+    if (tmp == 0){
+      spinForever = 1;
+    } else {
+      targetRotation += tmp;
+      spinForever = 0;
+    }
     putMessage(rotChange, (int32_t) targetRotation * 6.0f);
     break;
   case 'V':
@@ -308,6 +310,8 @@ int8_t motorHome() {
   return readRotorState();
 }
 
+// Distance of the motor traveled
+int32_t motorPosition;
 
 void motorISR() {
   static int8_t oldRotorState;
@@ -376,7 +380,7 @@ void motorCtrlFn() {
     if (velocity >= 0){
       // pick min of (y_s and y_r)
       // reset speed integral if we use y_r
-      if (y_s < y_r){
+      if ((y_s < y_r) || spinForever){
         ctorque = y_s;
         //error_r_int = 0;
       } else {
@@ -384,7 +388,7 @@ void motorCtrlFn() {
         error_s_int = 0;
       }
     } else {
-        if (y_s > y_r){
+        if ((y_s > y_r) || spinForever){
           ctorque = y_s;
           //error_r_int = 0;
         } else {
