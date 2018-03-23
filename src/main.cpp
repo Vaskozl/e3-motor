@@ -85,6 +85,8 @@ DigitalOut L2H(L2Hpin);
 DigitalOut L3H(L3Hpin);
 
 // Define global variables for position contol
+volatile int32_t motorPosition;
+
 int8_t orState = 0; // Rotor offset at motor state 0
 
 // Initialise the serial port
@@ -192,7 +194,6 @@ char newCmd[MAX_CMD_LENGTH];
  * them attomaticaly in both motorISR and motorCtrlFn
  */
 
-volatile int32_t motorPosition;
 
 volatile uint64_t newKey;
 volatile float targetVelocity = INIT_SPEED;
@@ -353,7 +354,7 @@ void motorCtrlFn() {
     // Print position and speed every 2 seconds
     iterations = (iterations + 1) % (10 * STATE_INTERVAL);
     if (!iterations) {
-      putMessage(positionReport, motorPosition);
+      putMessage(positionReport, currPosition);
       putMessage(velocityReport, velocity);
     }
 
