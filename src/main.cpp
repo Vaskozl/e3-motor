@@ -6,17 +6,17 @@
 // PID coefficients
 #define KS_P 17.0
 #define KS_I 0.11
-// #define KR_P 29.7
-#define KR_P 29.0
-#define KR_D 258.0
-#define KR_I 0.01
+
+#define KR_P 29.7
+#define KR_D 252.0
+// #define KR_I 0.01
 
 // Duty cycle used for PWM, as specified to avoid non linear behaviour
 #define MAX_DUTYCL 1000
 #define PWM_PERIOD 2000
 
 // How often to print the hash rate and speed/ velocity report
-#define HASHRATE_INTERVAL 1.0 // 8s
+#define HASHRATE_INTERVAL 8.0 // 8s
 #define STATE_INTERVAL    1   // 2s
 
 // Max input command size, based on size of key used for hashing
@@ -142,7 +142,7 @@ void commOutFn() {
       pc.printf("Position: %.1f, ", (int32_t)pMessage->data / 6.0);
       break;
     case velocityReport:
-      pc.printf("Velocity: %.1f\r\n", (int32_t)pMessage->data / 6.0);
+      pc.printf("Velocity: %.1f \n\r", (int32_t)pMessage->data/6.0);
       break;
     case rotChange:
       pc.printf("Changed target position to %.1f \n\r", (int32_t)pMessage->data/6.0);
@@ -210,7 +210,7 @@ void parseIn() {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
     targetRotation += tmp;
-    putMessage(rotChange, (int32_t) targetRotation * 6);
+    putMessage(rotChange, (int32_t) targetRotation * 6.0f);
     break;
   case 'V':
     sscanf(newCmd, "V%f", &tmp);
@@ -219,7 +219,7 @@ void parseIn() {
       putMessage(velChange, 0);
     } else {
       targetVelocity = tmp;
-      putMessage(velChange, (int32_t) targetVelocity*6);
+      putMessage(velChange, (int32_t)tmp * 6.0f);
     }
     break;
   case 'K':
@@ -334,7 +334,7 @@ void motorCtrlFn() {
   static float error_s_int = 0;
 
   float error_r;
-  static float error_r_int = 0;
+  //static float error_r_int = 0;
   static float old_error_r;
 
   int32_t ctorque;
@@ -359,9 +359,9 @@ void motorCtrlFn() {
 
     // Positional PD control with k_p and k_d 
     error_r = targetRotation - currPosition / 6.0f;
-    int32_t y_r = (int)(KR_P * error_r + KR_D * (error_r - old_error_r) + KR_I * error_r_int);
+    int32_t y_r = (int)(KR_P * error_r + KR_D * (error_r - old_error_r));
     old_error_r = error_r;
-    error_r_int += error_r;
+    //error_r_int += error_r;
 
     if (error_r < 0) y_s = -y_s;
 
@@ -373,7 +373,7 @@ void motorCtrlFn() {
       // reset speed integral if we use y_r
       if (y_s < y_r){
         ctorque = y_s;
-        error_r_int = 0;
+        //error_r_int = 0;
       } else {
         ctorque = y_r;
         error_s_int = 0;
@@ -381,7 +381,7 @@ void motorCtrlFn() {
     } else {
         if (y_s > y_r){
           ctorque = y_s;
-          error_r_int = 0;
+          //error_r_int = 0;
         } else {
           ctorque = y_r;
           error_s_int = 0;
