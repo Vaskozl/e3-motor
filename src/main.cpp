@@ -23,7 +23,7 @@
 #define MAX_CMD_LENGTH 18 
 
 // Define initial speed and rotation, so that the motor does something on startup
-#define INIT_SPEED    60.0
+#define INIT_SPEED    80.0
 #define INIT_ROTATION 400.0
 
 // Photointerrupter input pins
@@ -185,21 +185,19 @@ void serialISR() {
 }
 
 char newCmd[MAX_CMD_LENGTH];
-int newCmdPos = 0;
 
 /*
  * Key is 64 bits so we protect it with a mutex
  * The rest are 32 bits and we take care to access
  * them attomaticaly in both motorISR and motorCtrlFn
  */
+
+volatile int32_t motorPosition;
+
 volatile uint64_t newKey;
 volatile float targetVelocity = INIT_SPEED;
 volatile float targetRotation = INIT_ROTATION;
 volatile int32_t motorTorque = 800;
-
-// Here in case we receive an R0 command as
-// we do not want to forget our targetRotation
-bool spinForever = 0;
 
 Mutex newKey_mutex;
 
@@ -213,12 +211,11 @@ void parseIn() {
   switch (newCmd[0]) {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
-    if (tmp == 0){
-      spinForever = 1;
-    } else {
-      targetRotation += tmp;
-      spinForever = 0;
-    }
+    motorPosition = 0;
+    if (tmp == 0)
+      targetRotation = FLT_MAX;
+    else
+      targetRotation = tmp;
     putMessage(rotChange, (int32_t) targetRotation * 6.0f);
     break;
   case 'V':
@@ -244,6 +241,7 @@ void parseIn() {
 
 void commInFn() {
   pc.attach(&serialISR);
+  static int newCmdPos = 0;
   while (1) {
     osEvent newEvent = inCharQ.get();
     uint8_t newChar = *((uint8_t *)(&newEvent.value.p));
@@ -303,15 +301,13 @@ inline int8_t readRotorState() { return stateMap[I1 + 2 * I2 + 4 * I3]; }
 // Basic synchronisation routine
 int8_t motorHome() {
   // Put the motor in drive state 0 and wait for it to stabilise
-  motorOut(0, 2000);
+  motorOut(0, MAX_DUTYCL);
   wait(2.0);
 
   // Get the rotor state
   return readRotorState();
 }
 
-// Distance of the motor traveled
-int32_t motorPosition;
 
 void motorISR() {
   static int8_t oldRotorState;
@@ -380,7 +376,7 @@ void motorCtrlFn() {
     if (velocity >= 0){
       // pick min of (y_s and y_r)
       // reset speed integral if we use y_r
-      if ((y_s < y_r) || spinForever){
+      if (y_s < y_r){
         ctorque = y_s;
         //error_r_int = 0;
       } else {
@@ -388,7 +384,7 @@ void motorCtrlFn() {
         error_s_int = 0;
       }
     } else {
-        if ((y_s > y_r) || spinForever){
+        if (y_s > y_r){
           ctorque = y_s;
           //error_r_int = 0;
         } else {
