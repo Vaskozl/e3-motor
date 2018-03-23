@@ -86,6 +86,7 @@ DigitalOut L3H(L3Hpin);
 
 // Define global variables for position contol
 volatile int32_t motorPosition;
+volatile int32_t oldMotorPosition;
 
 int8_t orState = 0; // Rotor offset at motor state 0
 
@@ -147,7 +148,7 @@ void commOutFn() {
       pc.printf("Velocity: %.1f \n\r", (int32_t)pMessage->data/6.0);
       break;
     case rotChange:
-      pc.printf("Changed target position to %.1f \n\r", (int32_t)pMessage->data/6.0);
+      pc.printf("Changed target position to %.1f \n\r", (float)pMessage->data);
       break;
     case velChange:
       if (pMessage->data <= 0)
@@ -212,12 +213,13 @@ void parseIn() {
   switch (newCmd[0]) {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
+    oldMotorPosition = -(motorPosition - oldMotorPosition);
     motorPosition = 0;
     if (tmp == 0)
       targetRotation = FLT_MAX;
     else
       targetRotation = tmp;
-    putMessage(rotChange, (int32_t) targetRotation * 6.0f);
+    putMessage(rotChange, tmp);
     break;
   case 'V':
     sscanf(newCmd, "V%f", &tmp);
@@ -333,7 +335,6 @@ void motorCtrlTick() { motorCtrlT.signal_set(0x1); }
 void motorCtrlFn() {
   Ticker motorCtrlTicker;
   motorCtrlTicker.attach_us(&motorCtrlTick, 100000);
-  static int32_t oldMotorPosition;
   int32_t velocity = 0;
 
   float error_s;
