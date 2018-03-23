@@ -2,6 +2,21 @@
 #include "mbed.h"
 #include "rtos.h"
 
+// Duty cycle used for PWM, as specified to avoid non linear behaviour
+#define MAX_DUTYCL 1000
+#define PWM_PERIOD 2000
+
+// How often to print the hash rate and speed/ velocity report
+#define HASHRATE_INTERVAL 8.0 // 8s
+#define STATE_INTERVAL    2   // 2s
+
+// Max input command size, based on size of key used for hashing
+#define MAX_CMD_LENGTH 18 
+
+// Define initial speed and rotation, so that the motor does something on startup
+#define INIT_SPEED    60.0
+#define INIT_ROTATION 400.0
+
 // Photointerrupter input pins
 #define I1pin D2
 #define I2pin D11
@@ -66,9 +81,9 @@ int8_t orState = 0; // Rotor offset at motor state 0
 // Initialise the serial port
 RawSerial pc(SERIAL_TX, SERIAL_RX);
 
-// Define global variables for threading
-Thread commOutT;
-Thread commInT;
+// Define communications thread with reduce stack size
+Thread commOutT(osPriorityNormal, 512);
+Thread commInT(osPriorityNormal, 256);
 
 // A struct used for sending messages between threads
 // Code is message type, data is message content
@@ -83,7 +98,8 @@ Mail<message_t, 16> outMessages;
 // Enum for giving message types a code
 enum messageCode {
   motorState,
-  nonceFound,
+  nonceHigh,
+  nonceLow,
   hashRate,
   keyChange,
   positionReport,
@@ -112,19 +128,25 @@ void commOutFn() {
       pc.printf("Mining key changed to %x\n\r", pMessage->data);
       break;
     case positionReport:
-      pc.printf("Position %.1f, ", (int32_t)pMessage->data / 6.0);
+      pc.printf("Pos: %.1f, ", (int32_t)pMessage->data / 6.0);
       break;
     case velocityReport:
-      pc.printf("velocity %.1f\r\n", (int32_t)pMessage->data / 6.0);
+      pc.printf("Vel: %.1f\r\n", (int32_t)pMessage->data / 6.0);
       break;
     case motorState:
       pc.printf("Current motorState is %x\n\r", pMessage->data);
       break;
-    case nonceFound:
-      pc.printf("Nonce found: %x\n\r", pMessage->data);
+    case nonceHigh:
+      pc.printf("Nonce found: %x", pMessage->data);
+      break;
+    case nonceLow:
+      pc.printf("%x\n\r", pMessage->data);
       break;
     case err:
-      pc.printf("Debug code of %x\n\r", pMessage->data);
+      if (pMessage->data = 1)
+        pc.printf("Serial input too long.\n\r");
+      else 
+        pc.printf("Error code %x.\n\r", pMessage->data);
       break;
     default:
       pc.printf("Unknown error with data %x\n\r", pMessage->data);
@@ -141,36 +163,51 @@ void serialISR() {
   inCharQ.put((void *)newChar);
 }
 
-#define MAX_CMD_LENGTH 18
 char newCmd[MAX_CMD_LENGTH];
 int newCmdPos = 0;
 
+/*
+ * Key is 64 bits so we protect it with a mutex
+ * The rest are 32 bits and we take care to access
+ * them attomaticaly in both motorISR and motorCtrlFn
+ */
 volatile uint64_t newKey;
-volatile float targetVelocity = 500.0;
-volatile float targetRotation = 1500.0;
-volatile int32_t motorTorque = 300;
+volatile float targetVelocity = INIT_SPEED;
+volatile float targetRotation = INIT_ROTATION;
+volatile int32_t motorTorque = 0;
 
 Mutex newKey_mutex;
 
+/* Function to parse the input over serial 
+ * V0 and R0 make the motor spin at maximum 
+ * positve speed to the maximum position
+ */
+
 void parseIn() {
+  float tmp;
   switch (newCmd[0]) {
   case 'R':
-    sscanf(newCmd, "R%f", &targetRotation);
+    sscanf(newCmd, "R%f", &tmp);
+    if (tmp == 0)
+      targetRotation = FLT_MAX;
+    else
+      targetRotation =+ tmp;
     pc.printf("Changed target rotation to %.1f \n\r", targetRotation);
     break;
   case 'V':
-    sscanf(newCmd, "V%f", &targetVelocity);
+    sscanf(newCmd, "V%f", &tmp);
+    if (tmp == 0)
+      targetVelocity = FLT_MAX;
+    else 
+      targetVelocity =+ tmp;
     pc.printf("Changed target velocity to %.1f \n\r", targetVelocity);
     break;
   case 'K':
+    // Protect key with mutex as it is 64 bits and 
+    // we can not guarrantee atomic access
     newKey_mutex.lock();
     sscanf(newCmd, "K%x", &newKey);
     newKey_mutex.unlock();
-    break;
-
-  case 'S':
-    sscanf(newCmd, "S%d", &motorTorque);
-    pc.printf("Setting torque to %d\n", motorTorque);
     break;
   }
 }
@@ -180,7 +217,6 @@ void commInFn() {
   while (1) {
     osEvent newEvent = inCharQ.get();
     uint8_t newChar = *((uint8_t *)(&newEvent.value.p));
-    pc.putc(newChar);
     if (newCmdPos >= MAX_CMD_LENGTH) {
       newCmdPos = 0;
       putMessage(err, 0x1);
@@ -274,10 +310,10 @@ void motorCtrlFn() {
   int32_t velocity = 0;
 
   float error_s;
-  static float error_s_int = 0;
+  // static float error_s_int = 0;
 
   float error_r;
-  static float error_r_int = 0;
+  // static float error_r_int = 0;
   static float old_error_r;
 
   int32_t ctorque;
@@ -285,52 +321,44 @@ void motorCtrlFn() {
   uint8_t iterations = 0;
   while (1) {
     motorCtrlT.signal_wait(0x1);
-    // putMessage(err, motorPosition);
     int32_t currPosition = motorPosition;
     velocity = (currPosition - oldMotorPosition) * 10;
     oldMotorPosition = currPosition;
-    iterations = (iterations + 1) % 20;
+    // Print position and speed every 2 seconds
+    iterations = (iterations + 1) % (10 * STATE_INTERVAL);
     if (!iterations) {
       putMessage(positionReport, motorPosition);
       putMessage(velocityReport, velocity);
     }
-    // Proportional control with k_p = 10
 
+    // Speed proportional control with k_p = 17.0
     error_s = (targetVelocity * 6.0f - abs(velocity));
-    int32_t y_s = (int)(17.0f * error_s);
-    error_s_int += error_s;
+    int32_t y_s = (int)(17.0f * error_s) * sgn(error_s);
+    // error_s_int += error_s;
 
+
+    // Positional PD control with k_p = 11.5 / k_d * s = 95.7
     error_r = targetRotation - currPosition / 6.0f;
     int32_t y_r = (int)(11.5f * error_r + 95.7f * (error_r - old_error_r));
     old_error_r = error_r;
-    error_r_int += error_r;
-
-    int32_t tmp;
-
-    if (error_r < 0)
-      y_s = -y_s;
 
     if (velocity >= 0) {
-      // pick min of (y_s and y_r)
-      if (y_s < y_r)
-        ctorque = y_s;
-      else
-        ctorque = y_r;
+      ctorque = max(y_s, y_r);
     } else {
-      if (y_s > y_r) {
-        ctorque = y_s;
-      } else {
-        ctorque = y_r;
-      }
+      ctorque = min(y_s, y_r);
     }
 
     if (ctorque < 0) {
-      motorTorque = -ctorque;
+      ctorque = -ctorque;
       lead = -2;
     } else {
-      motorTorque = ctorque;
       lead = 2;
     }
+
+    if (ctorque > MAX_DUTYCL)
+      motorTorque = MAX_DUTYCL;
+    else
+      motorTorque = ctorque;
 
     // Spin up motor if velocity = 0 as no interrupts get triggered
     if (velocity == 0)
@@ -341,11 +369,11 @@ void motorCtrlFn() {
 // Main
 int main() {
 
-  L1L.period_us(2000);
-  L2L.period_us(2000);
-  L3L.period_us(2000);
+  L1L.period_us(PWM_PERIOD);
+  L2L.period_us(PWM_PERIOD);
+  L3L.period_us(PWM_PERIOD);
 
-  pc.printf("Hello\n\r");
+  pc.printf("Hey, this is group VKPD's BLDC motor controller!\n\r");
 
   // Start console in and out threads
   commOutT.start(commOutFn);
@@ -397,17 +425,15 @@ int main() {
     newKey_mutex.unlock();
     SHA256instance.computeHash(hash, sequence, lengthOfSequence);
     hashCount++;
+    // Tell us when we find a nonce :)
     if ((hash[0] == 0) && (hash[1] == 0)) {
-      // putMessage(nonceHigh, (*nonce) >> 32);
-      // putMessage(nonceFound, *nonce);
+      putMessage(nonceHigh, (*nonce) >> 32);
+      putMessage(nonceLow, *nonce);
     }
-    //   if (*nonce%102==0){
-    //       pc.printf("h");
-    //   }
     (*nonce) += 1;
     timePassed = timer.read();
-    if (timePassed > 8) {
-      putMessage(hashRate, hashCount);
+    if (timePassed > HASHRATE_INTERVAL) {
+      putMessage(hashRate, hashCount/HASHRATE_INTERVAL);
       hashCount = 0;
       timer.reset();
     }
