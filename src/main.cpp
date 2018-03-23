@@ -1,6 +1,12 @@
 #include "SHA256.h"
 #include "mbed.h"
 #include "rtos.h"
+#include "float.h"
+
+// PID coefficients
+#define KS_P 17.0
+#define KR_P 11.5
+#define KR_D 95.7
 
 // Duty cycle used for PWM, as specified to avoid non linear behaviour
 #define MAX_DUTYCL 1000
@@ -143,7 +149,7 @@ void commOutFn() {
       pc.printf("%x\n\r", pMessage->data);
       break;
     case err:
-      if (pMessage->data = 1)
+      if (pMessage->data == 1)
         pc.printf("Serial input too long.\n\r");
       else 
         pc.printf("Error code %x.\n\r", pMessage->data);
@@ -331,23 +337,31 @@ void motorCtrlFn() {
       putMessage(velocityReport, velocity);
     }
 
-    // Speed proportional control with k_p = 17.0
+    // Speed proportional control with k_p
     error_s = (targetVelocity * 6.0f - abs(velocity));
-    int32_t y_s = (int)(17.0f * error_s) * sgn(error_s);
+    int32_t y_s = (int)(KS_P * error_s);
     // error_s_int += error_s;
 
-
-    // Positional PD control with k_p = 11.5 / k_d * s = 95.7
+    // Positional PD control with k_p and k_d 
     error_r = targetRotation - currPosition / 6.0f;
-    int32_t y_r = (int)(11.5f * error_r + 95.7f * (error_r - old_error_r));
+    int32_t y_r = (int)(KR_P * error_r + KR_D * (error_r - old_error_r));
     old_error_r = error_r;
 
-    if (velocity >= 0) {
-      ctorque = max(y_s, y_r);
-    } else {
-      ctorque = min(y_s, y_r);
-    }
+    if (error_r < 0) y_s = -y_s;
 
+    if (velocity >= 0){
+      // pick min of (y_s and y_r)
+      if (y_s < y_r)
+        ctorque = y_s;
+      else
+        ctorque = y_r;
+    } else {
+        if (y_s > y_r)
+          ctorque = y_s;
+        else
+          ctorque = y_r;
+    }
+   
     if (ctorque < 0) {
       ctorque = -ctorque;
       lead = -2;
