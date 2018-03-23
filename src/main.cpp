@@ -5,8 +5,8 @@
 
 // PID coefficients
 #define KS_P 17.0
-#define KR_P 30.3
-#define KR_D 255.0
+#define KR_P 29.7
+#define KR_D 258.0
 
 // Duty cycle used for PWM, as specified to avoid non linear behaviour
 #define MAX_DUTYCL 1000
