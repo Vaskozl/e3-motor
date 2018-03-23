@@ -87,6 +87,9 @@ DigitalOut L3H(L3Hpin);
 // Define global variables for position contol
 int8_t orState = 0; // Rotor offset at motor state 0
 
+// Distance of the motor traveled
+int32_t motorPosition;
+
 // Initialise the serial port
 RawSerial pc(SERIAL_TX, SERIAL_RX);
 
@@ -209,7 +212,11 @@ void parseIn() {
   switch (newCmd[0]) {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
-    targetRotation += tmp;
+    motorPosition = 0;
+    if (tmp == 0)
+      targetRotation = FLT_MAX;
+    else
+      targetRotation = tmp;
     putMessage(rotChange, (int32_t) targetRotation * 6.0f);
     break;
   case 'V':
@@ -301,8 +308,6 @@ int8_t motorHome() {
   return readRotorState();
 }
 
-// Distance of the motor traveled
-int32_t motorPosition;
 
 void motorISR() {
   static int8_t oldRotorState;
