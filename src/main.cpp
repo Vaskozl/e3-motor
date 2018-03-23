@@ -5,16 +5,16 @@
 
 // PID coefficients
 #define KS_P 17.0
-#define KR_P 11.5
-#define KR_D 95.7
+#define KR_P 30.3
+#define KR_D 255.0
 
 // Duty cycle used for PWM, as specified to avoid non linear behaviour
 #define MAX_DUTYCL 1000
 #define PWM_PERIOD 2000
 
 // How often to print the hash rate and speed/ velocity report
-#define HASHRATE_INTERVAL 8.0 // 8s
-#define STATE_INTERVAL    2   // 2s
+#define HASHRATE_INTERVAL 1.0 // 8s
+#define STATE_INTERVAL    1   // 2s
 
 // Max input command size, based on size of key used for hashing
 #define MAX_CMD_LENGTH 18 
@@ -88,8 +88,8 @@ int8_t orState = 0; // Rotor offset at motor state 0
 RawSerial pc(SERIAL_TX, SERIAL_RX);
 
 // Define communications thread with reduce stack size
-Thread commOutT(osPriorityNormal, 512);
-Thread commInT(osPriorityNormal, 256);
+Thread commOutT(osPriorityNormal, 1024);
+Thread commInT(osPriorityNormal, 2048);
 
 // A struct used for sending messages between threads
 // Code is message type, data is message content
@@ -108,6 +108,8 @@ enum messageCode {
   nonceLow,
   hashRate,
   keyChange,
+  rotChange,
+  velChange,
   positionReport,
   velocityReport,
   rotationCount,
@@ -134,16 +136,26 @@ void commOutFn() {
       pc.printf("Mining key changed to %x\n\r", pMessage->data);
       break;
     case positionReport:
-      pc.printf("Pos: %.1f, ", (int32_t)pMessage->data / 6.0);
+      pc.printf("Position: %.1f, ", (int32_t)pMessage->data / 6.0);
       break;
     case velocityReport:
-      pc.printf("Vel: %.1f\r\n", (int32_t)pMessage->data / 6.0);
+      pc.printf("Velocity: %.1f\r\n", (int32_t)pMessage->data / 6.0);
       break;
+    case rotChange:
+      pc.printf("Changed target position to %.1f \n\r", (int32_t)pMessage->data/6.0);
+      break;
+    case velChange:
+      if (pMessage->data <= 0)
+        pc.printf("Removed maximum speed cap.\n\r");
+      else
+        pc.printf("Changed target velocity to %.1f \n\r", (float)pMessage->data);
+      break;
+
     case motorState:
       pc.printf("Current motorState is %x\n\r", pMessage->data);
       break;
     case nonceHigh:
-      pc.printf("Nonce found: %x", pMessage->data);
+      pc.printf("Nonce found: 0x%x", pMessage->data);
       break;
     case nonceLow:
       pc.printf("%x\n\r", pMessage->data);
@@ -180,7 +192,7 @@ int newCmdPos = 0;
 volatile uint64_t newKey;
 volatile float targetVelocity = INIT_SPEED;
 volatile float targetRotation = INIT_ROTATION;
-volatile int32_t motorTorque = 0;
+volatile int32_t motorTorque = 800;
 
 Mutex newKey_mutex;
 
@@ -190,23 +202,22 @@ Mutex newKey_mutex;
  */
 
 void parseIn() {
-  float tmp;
+  float tmp = 0;
   switch (newCmd[0]) {
   case 'R':
     sscanf(newCmd, "R%f", &tmp);
-    if (tmp == 0)
-      targetRotation = FLT_MAX;
-    else
-      targetRotation =+ tmp;
-    pc.printf("Changed target rotation to %.1f \n\r", targetRotation);
+    targetRotation += tmp;
+    putMessage(rotChange, (int32_t) targetRotation * 6);
     break;
   case 'V':
     sscanf(newCmd, "V%f", &tmp);
-    if (tmp == 0)
+    if (tmp <= 0){
       targetVelocity = FLT_MAX;
-    else 
-      targetVelocity =+ tmp;
-    pc.printf("Changed target velocity to %.1f \n\r", targetVelocity);
+      putMessage(velChange, 0);
+    } else {
+      targetVelocity = tmp;
+      putMessage(velChange, targetVelocity);
+    }
     break;
   case 'K':
     // Protect key with mutex as it is 64 bits and 
@@ -279,7 +290,7 @@ inline int8_t readRotorState() { return stateMap[I1 + 2 * I2 + 4 * I3]; }
 // Basic synchronisation routine
 int8_t motorHome() {
   // Put the motor in drive state 0 and wait for it to stabilise
-  motorOut(0, 256);
+  motorOut(0, 2000);
   wait(2.0);
 
   // Get the rotor state
@@ -304,7 +315,7 @@ void motorISR() {
   oldRotorState = rotorState;
 }
 
-Thread motorCtrlT(osPriorityNormal, 512);
+Thread motorCtrlT(osPriorityHigh, 512);
 
 // Allow motorCntl function to run every tick (10ms in our case)
 void motorCtrlTick() { motorCtrlT.signal_set(0x1); }
@@ -349,6 +360,9 @@ void motorCtrlFn() {
 
     if (error_r < 0) y_s = -y_s;
 
+    // Prevent motor from beeping if close enough
+    if ((error_r > -0.4) && (error_r < 0.4)) y_r = 0;
+
     if (velocity >= 0){
       // pick min of (y_s and y_r)
       if (y_s < y_r)
@@ -369,6 +383,8 @@ void motorCtrlFn() {
       lead = 2;
     }
 
+    // Atomic access to motorTorque which is used
+    // by the interrupt ISR handler
     if (ctorque > MAX_DUTYCL)
       motorTorque = MAX_DUTYCL;
     else
@@ -441,8 +457,8 @@ int main() {
     hashCount++;
     // Tell us when we find a nonce :)
     if ((hash[0] == 0) && (hash[1] == 0)) {
-      putMessage(nonceHigh, (*nonce) >> 32);
-      putMessage(nonceLow, *nonce);
+      putMessage(nonceHigh, (*nonce));
+      putMessage(nonceLow, (*nonce+8));
     }
     (*nonce) += 1;
     timePassed = timer.read();
